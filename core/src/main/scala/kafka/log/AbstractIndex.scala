@@ -27,17 +27,19 @@ import kafka.common.IndexOffsetOverflowException
 import kafka.log.IndexSearchType.IndexSearchEntity
 import kafka.utils.CoreUtils.inLock
 import kafka.utils.{CoreUtils, Logging}
-import org.apache.kafka.common.utils.{ByteBufferUnmapper, OperatingSystem, Utils}
+import org.apache.kafka.common.utils.{MappedByteBuffers, OperatingSystem, Utils}
+
+import scala.math.ceil
 
 /**
  * The abstract index class which holds entry format agnostic methods.
  *
- * @param _file The index file
+ * @param file The index file
  * @param baseOffset the base offset of the segment that this index is corresponding to.
  * @param maxIndexSize The maximum index size in bytes.
  */
-abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: Long, val maxIndexSize: Int = -1,
-                             val writable: Boolean) extends Closeable {
+abstract class AbstractIndex[K, V](@volatile var file: File, val baseOffset: Long,
+                                   val maxIndexSize: Int = -1, val writable: Boolean) extends Closeable {
   import AbstractIndex._
 
   // Length of the index file
@@ -106,62 +108,71 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
 
   protected val lock = new ReentrantLock
 
-  @volatile
-  protected var mmap: MappedByteBuffer = {
-    val newlyCreated = file.createNewFile()
-    val raf = if (writable) new RandomAccessFile(file, "rw") else new RandomAccessFile(file, "r")
-    try {
-      /* pre-allocate the file if necessary */
-      if(newlyCreated) {
-        if(maxIndexSize < entrySize)
-          throw new IllegalArgumentException("Invalid max index size: " + maxIndexSize)
-        raf.setLength(roundDownToExactMultiple(maxIndexSize, entrySize))
-      }
-
-      /* memory-map the file */
-      _length = raf.length()
-      val idx = {
-        if (writable)
-          raf.getChannel.map(FileChannel.MapMode.READ_WRITE, 0, _length)
-        else
-          raf.getChannel.map(FileChannel.MapMode.READ_ONLY, 0, _length)
-      }
-      /* set the position in the index for the next entry */
-      if(newlyCreated)
-        idx.position(0)
-      else
-        // if this is a pre-existing index, assume it is valid and set position to last entry
-        idx.position(roundDownToExactMultiple(idx.limit(), entrySize))
-      idx
-    } finally {
-      CoreUtils.swallow(raf.close(), AbstractIndex)
-    }
-  }
-
   /**
    * The maximum number of entries this index can hold
    */
   @volatile
-  private[this] var _maxEntries: Int = mmap.limit() / entrySize
+  private[this] var _maxEntries: Int = _
 
   /** The number of entries in this index */
   @volatile
-  protected var _entries: Int = mmap.position() / entrySize
+  protected var _entries: Int = _
+
+  @volatile
+  protected var _mmap: MappedByteBuffer = _
+
+  protected def mmap(): MappedByteBuffer = {
+    maybeLock(lock) {
+      if (_mmap == null) {
+        val newlyCreated = file.createNewFile()
+        val raf = if (writable) new RandomAccessFile(file, "rw") else new RandomAccessFile(file, "r")
+        try {
+          /* pre-allocate the file if necessary */
+          if(newlyCreated) {
+            if(maxIndexSize < entrySize)
+              throw new IllegalArgumentException("Invalid max index size: " + maxIndexSize)
+            raf.setLength(roundDownToExactMultiple(maxIndexSize, entrySize))
+          }
+
+          /* memory-map the file */
+          _length = raf.length()
+          val idx = {
+            if (writable)
+              raf.getChannel.map(FileChannel.MapMode.READ_WRITE, 0, _length)
+            else
+              raf.getChannel.map(FileChannel.MapMode.READ_ONLY, 0, _length)
+          }
+          /* set the position in the index for the next entry */
+          if(newlyCreated)
+            idx.position(0)
+          else
+            // if this is a pre-existing index, assume it is valid and set position to last entry
+            idx.position(roundDownToExactMultiple(idx.limit(), entrySize))
+
+          // Set resulting mmap to instance variables
+          _mmap = idx
+          _maxEntries = _mmap.limit() / entrySize
+          _entries = _mmap.position() / entrySize
+        } finally {
+          CoreUtils.swallow(raf.close(), AbstractIndex)
+        }
+      }
+      return _mmap;
+    }
+  }
+
+  mmap() // Initialize
 
   /**
    * True iff there are no more slots available in this index
    */
   def isFull: Boolean = _entries >= _maxEntries
 
-  def file: File = _file
-
   def maxEntries: Int = _maxEntries
 
   def entries: Int = _entries
 
   def length: Long = _length
-
-  def updateParentDir(parentDir: File): Unit = _file = new File(parentDir, file.getName)
 
   /**
    * Reset the size of the memory map and the underneath file. This is used in two kinds of cases: (1) in
@@ -184,16 +195,16 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
         try {
           val position = mmap.position()
 
-          /* Windows or z/OS won't let us modify the file length while the file is mmapped :-( */
-          if (OperatingSystem.IS_WINDOWS || OperatingSystem.IS_ZOS)
+          /* Windows won't let us modify the file length while the file is mmapped :-( */
+          if (OperatingSystem.IS_WINDOWS)
             safeForceUnmap()
           raf.setLength(roundedNewSize)
           _length = roundedNewSize
-          mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
+          _mmap = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, roundedNewSize)
           _maxEntries = mmap.limit() / entrySize
-          mmap.position(position)
-          debug(s"Resized ${file.getAbsolutePath} to $roundedNewSize, position is ${mmap.position()} " +
-            s"and limit is ${mmap.limit()}")
+          _mmap.position(position)
+          debug(s"Resized ${file.getAbsolutePath} to $roundedNewSize, position is ${_mmap.position()} " +
+            s"and limit is ${_mmap.limit()}")
           true
         } finally {
           CoreUtils.swallow(raf.close(), AbstractIndex)
@@ -207,17 +218,17 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
    *
    * @throws IOException if rename fails
    */
-  def renameTo(f: File): Unit = {
-    maybeUnmap(lock){
+  def renameTo(f: File) {
+    maybeUnmap(lock) {
       try Utils.atomicMoveWithFallback(file.toPath, f.toPath)
-      finally _file = f
+      finally file = f
     }
   }
 
   /**
    * Flush the data in the index to disk
    */
-  def flush(): Unit = {
+  def flush() {
     inLock(lock) {
       mmap.force()
     }
@@ -231,15 +242,17 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
    *         not exist
    */
   def deleteIfExists(): Boolean = {
-    closeHandler()
-    Files.deleteIfExists(file.toPath)
+    maybeLock(lock) {
+      closeHandler()
+      Files.deleteIfExists(file.toPath)
+    };
   }
 
   /**
    * Trim this segment to fit just the valid entries, deleting all trailing unwritten bytes from
    * the file.
    */
-  def trimToValidSize(): Unit = {
+  def trimToValidSize() {
     inLock(lock) {
       resize(entrySize * _entries)
     }
@@ -248,10 +261,10 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
   /**
    * The number of bytes actually used by this index
    */
-  def sizeInBytes: Int = entrySize * _entries
+  def sizeInBytes = entrySize * _entries
 
   /** Close the index */
-  def close(): Unit = {
+  def close() {
     trimToValidSize()
     closeHandler()
   }
@@ -313,33 +326,31 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
   }
 
   protected def safeForceUnmap(): Unit = {
-    if (mmap != null) {
-      try forceUnmap()
-      catch {
-        case t: Throwable => error(s"Error unmapping index $file", t)
-      }
+    try forceUnmap()
+    catch {
+      case t: Throwable => error(s"Error unmapping index $file", t)
     }
   }
 
   /**
    * Forcefully free the buffer's mmap.
    */
-  protected[log] def forceUnmap(): Unit = {
-    try ByteBufferUnmapper.unmap(file.getAbsolutePath, mmap)
-    finally mmap = null // Accessing unmapped mmap crashes JVM by SEGV so we null it out to be safe
+  protected[log] def forceUnmap() {
+    try MappedByteBuffers.unmap(file.getAbsolutePath, mmap)
+    finally _mmap = null // Accessing unmapped mmap crashes JVM by SEGV so we null it out to be safe
   }
 
   /**
-   * Execute the given function in a lock only if we are running on windows or z/OS. We do this
-   * because Windows or z/OS won't let us resize a file while it is mmapped. As a result we have to force unmap it
+   * Execute the given function in a lock only if we are running on windows. We do this
+   * because Windows won't let us resize a file while it is mmapped. As a result we have to force unmap it
    * and this requires synchronizing reads.
    */
   protected def maybeLock[T](lock: Lock)(fun: => T): T = {
-    if (OperatingSystem.IS_WINDOWS || OperatingSystem.IS_ZOS)
+    if (OperatingSystem.IS_WINDOWS)
       lock.lock()
     try fun
     finally {
-      if (OperatingSystem.IS_WINDOWS || OperatingSystem.IS_ZOS)
+      if (OperatingSystem.IS_WINDOWS)
         lock.unlock()
     }
   }
@@ -399,7 +410,7 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
       var lo = begin
       var hi = end
       while(lo < hi) {
-        val mid = (lo + hi + 1) >>> 1
+        val mid = ceil(hi/2.0 + lo/2.0).toInt
         val found = parseEntry(idx, mid)
         val compareResult = compareIndexEntry(found, target, searchEntity)
         if(compareResult > 0)
@@ -427,8 +438,8 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
 
   private def compareIndexEntry(indexEntry: IndexEntry, target: Long, searchEntity: IndexSearchEntity): Int = {
     searchEntity match {
-      case IndexSearchType.KEY => java.lang.Long.compare(indexEntry.indexKey, target)
-      case IndexSearchType.VALUE => java.lang.Long.compare(indexEntry.indexValue, target)
+      case IndexSearchType.KEY => indexEntry.indexKey.compareTo(target)
+      case IndexSearchType.VALUE => indexEntry.indexValue.compareTo(target)
     }
   }
 
@@ -449,7 +460,7 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
 }
 
 object AbstractIndex extends Logging {
-  override val loggerName: String = classOf[AbstractIndex].getName
+  override val loggerName: String = classOf[AbstractIndex[_, _]].getName
 }
 
 object IndexSearchType extends Enumeration {
