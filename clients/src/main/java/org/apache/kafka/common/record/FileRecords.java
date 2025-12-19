@@ -17,6 +17,7 @@
 package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.network.TransferableChannel;
 import org.apache.kafka.common.network.TransportLayer;
 import org.apache.kafka.common.record.FileLogInputStream.FileChannelRecordBatch;
 import org.apache.kafka.common.utils.AbstractIterator;
@@ -86,6 +87,28 @@ public class FileRecords extends AbstractRecords implements Closeable {
             // set the file position to the last byte in the file
             channel.position(limit);
         }
+        batches = batchesFrom(start);
+    }
+
+    /**
+     * Constructor for creating a slice.
+     *
+     * This overloaded constructor avoids having to declare a checked IO exception.
+     */
+    private FileRecords(
+      File file,
+      FileChannel channel,
+      int start,
+      int end
+    ) {
+        this.file = file;
+        this.channel = channel;
+        this.start = start;
+        this.end = end;
+        this.isSlice = true;
+
+        // don't check the file size since this is just a slice view
+        this.size = new AtomicInteger(end - start);
 
         batches = batchesFrom(start);
     }
@@ -151,7 +174,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param size The number of bytes after the start position to include
      * @return A sliced wrapper on this message set limited based on the given position and size
      */
-    public FileRecords slice(int position, int size) throws IOException {
+  /*  public FileRecords slice(int position, int size) throws IOException {
         if (position < 0)
             throw new IllegalArgumentException("Invalid position: " + position + " in read from " + this);
         if (position > sizeInBytes() - start)
@@ -165,7 +188,35 @@ public class FileRecords extends AbstractRecords implements Closeable {
             end = start + sizeInBytes();
         return new FileRecords(file, channel(), this.start + position, end, true);
     }
+*/
 
+    private int availableBytes(int position, int size) {
+        // Cache current size in case concurrent write changes it
+        int currentSizeInBytes = sizeInBytes();
+
+        if (position < 0)
+            throw new IllegalArgumentException("Invalid position: " + position + " in read from " + this);
+        // position should always be relative to the start of the file hence compare with file size
+        // to verify if the position is within the file.
+        if (position > currentSizeInBytes)
+            throw new IllegalArgumentException("Slice from position " + position + " exceeds end position of " + this);
+        if (size < 0)
+            throw new IllegalArgumentException("Invalid size: " + size + " in read from " + this);
+
+        int end = this.start + position + size;
+        // Handle integer overflow or if end is beyond the end of the file
+        if (end < 0 || end > start + currentSizeInBytes)
+            end = this.start + currentSizeInBytes;
+        return end - (this.start + position);
+    }
+
+    @Override
+    public FileRecords slice(int position, int size) {
+        int availableBytes = availableBytes(position, size);
+        int startPosition = this.start + position;
+
+        return new FileRecords(file, channel, startPosition, startPosition + availableBytes);
+    }
     /**
      * Append a set of records to the file. This method is not thread-safe and must be
      * protected with a lock.
@@ -298,7 +349,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
         return originalSize - targetSize;
     }
 
-    @Override
+  /*  @Override
     public ConvertedRecords<? extends Records> downConvert(byte toMagic, long firstOffset, Time time) {
         ConvertedRecords<MemoryRecords> convertedRecords = RecordsUtil.downConvert(batches, toMagic, firstOffset, time);
         if (convertedRecords.recordConversionStats().numRecordsConverted() == 0) {
@@ -314,27 +365,22 @@ public class FileRecords extends AbstractRecords implements Closeable {
             return convertedRecords;
         }
     }
-
+*/
     @Override
-    public long writeTo(GatheringByteChannel destChannel, long offset, int length) throws IOException {
-        long newSize = Math.min(channel().size(), end) - start;
+    public int writeTo(TransferableChannel destChannel, int offset, int length) throws IOException {
+        long newSize = Math.min(channel.size(), end) - start;
         int oldSize = sizeInBytes();
         if (newSize < oldSize)
             throw new KafkaException(String.format(
-                    "Size of FileRecords %s has been truncated during write: old size %d, new size %d",
-                    file.getAbsolutePath(), oldSize, newSize));
+              "Size of FileRecords %s has been truncated during write: old size %d, new size %d",
+              file.getAbsolutePath(), oldSize, newSize));
 
         long position = start + offset;
-        int count = Math.min(length, oldSize);
-        final long bytesTransferred;
-        if (destChannel instanceof TransportLayer) {
-            TransportLayer tl = (TransportLayer) destChannel;
-            bytesTransferred = tl.transferFrom(channel(), position, count);
-        } else {
-            bytesTransferred = channel().transferTo(position, count, destChannel);
-        }
-        return bytesTransferred;
+        int count = Math.min(length, oldSize - offset);
+        // safe to cast to int since `count` is an int
+        return (int) destChannel.transferFrom(channel, position, count);
     }
+
 
     /**
      * Search forward for the file position of the last offset that is greater than or equal to the target offset
