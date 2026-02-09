@@ -159,7 +159,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
         buffer.flip();
     }
 
-    /**
+    /*   /**
      * Return a slice of records from this instance, which is a view into this set starting from the given position
      * and with the given size limit.
      *
@@ -170,8 +170,8 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param position The start position to begin the read from
      * @param size The number of bytes after the start position to include
      * @return A sliced wrapper on this message set limited based on the given position and size
-     */
-  /*  public FileRecords slice(int position, int size) throws IOException {
+
+   public FileRecords slice(int position, int size) throws IOException {
         if (position < 0)
             throw new IllegalArgumentException("Invalid position: " + position + " in read from " + this);
         if (position > sizeInBytes() - start)
@@ -186,7 +186,6 @@ public class FileRecords extends AbstractRecords implements Closeable {
         return new FileRecords(file, channel(), this.start + position, end, true);
     }
 */
-
     /**
      * Return a slice of records from this instance, the difference with {@link FileRecords#slice(int, int)} is
      * that the position is not necessarily on an offset boundary.
