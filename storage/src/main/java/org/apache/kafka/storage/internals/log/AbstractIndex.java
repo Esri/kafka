@@ -17,6 +17,7 @@
 package org.apache.kafka.storage.internals.log;
 
 import org.apache.kafka.common.utils.ByteBufferUnmapper;
+import org.apache.kafka.common.utils.OperatingSystem;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.server.util.LockUtils;
 
@@ -232,10 +233,42 @@ public abstract class AbstractIndex implements Closeable {
      * @throws IOException if rename fails
      */
     public void renameTo(File f) throws IOException {
-        try {
-            Utils.atomicMoveWithFallback(file.toPath(), f.toPath(), false);
-        } finally {
-            this.file = f;
+        if (OperatingSystem.IS_WINDOWS) {
+            // On Windows, a MappedByteBuffer holds an open file handle that prevents renaming the
+            // underlying file. We must unmap first, rename, then remap from the new path.
+            // See KAFKA-1194 / KAFKA-8811.
+            //
+            // We acquire only remapLock.writeLock (not lock) because:
+            //  - We are only swapping the mmap pointer and file reference, not mutating entry
+            //    count or position — those are guarded by `lock`, not `remapLock`.
+            //  - Holding `lock` while waiting for remapLock.writeLock causes a liveness hazard:
+            //    a pending write lock blocks new read locks (ReentrantReadWriteLock fairness),
+            //    so lookup()/entry() callers (which hold only remapLock.readLock) can starve,
+            //    and any concurrent append() waiting for `lock` would block indefinitely.
+            inRemapWriteLock(() -> {
+                // mmap may already be null if closeHandlers() was called before this rename
+                // (e.g. during a directory rename). In that case skip the unmap step.
+                int position = (mmap != null) ? mmap.position() : 0;
+                if (mmap != null) {
+                    safeForceUnmap();
+                }
+                try {
+                    Utils.atomicMoveWithFallback(file.toPath(), f.toPath(), false);
+                } finally {
+                    // Always update file reference so subsequent operations target the correct
+                    // path, even if the rename failed partway through.
+                    this.file = f;
+                }
+                // Remap from the new file path so the index remains usable after the rename.
+                createAndAssignMmap();
+                mmap.position(position);
+            });
+        } else {
+            try {
+                Utils.atomicMoveWithFallback(file.toPath(), f.toPath(), false);
+            } finally {
+                this.file = f;
+            }
         }
     }
 

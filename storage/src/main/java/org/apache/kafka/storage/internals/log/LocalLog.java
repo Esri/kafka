@@ -25,6 +25,7 @@ import org.apache.kafka.common.record.FileLogInputStream;
 import org.apache.kafka.common.record.FileRecords;
 import org.apache.kafka.common.record.MemoryRecords;
 import org.apache.kafka.common.utils.LogContext;
+import org.apache.kafka.common.utils.OperatingSystem;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.server.util.Scheduler;
@@ -200,6 +201,14 @@ public class LocalLog {
             () -> "Error while renaming dir for " + topicPartition + " in log dir " +  dir.getParent(),
             () -> {
                 File renamedDir = new File(dir.getParent(), name);
+                if (OperatingSystem.IS_WINDOWS) {
+                    // On Windows, open file handles (MappedByteBuffer for index files, FileChannel for log files)
+                    // prevent renaming a directory. Close all segment handlers before the move.
+                    // We do NOT set isMemoryMappedBufferClosed here because the log may still need to
+                    // be used after the rename (e.g. for segment deletion in the async-delete path).
+                    // See KAFKA-1194 / KAFKA-8811.
+                    segments.closeHandlers();
+                }
                 Utils.atomicMoveWithFallback(dir.toPath(), renamedDir.toPath());
                 if (!renamedDir.equals(dir)) {
                     dir = renamedDir;
