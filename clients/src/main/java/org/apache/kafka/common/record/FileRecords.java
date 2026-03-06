@@ -258,8 +258,20 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Commit all written data to the physical disk
      */
     public void flush() throws IOException {
-        if (channel != null) {
-            channel.force(true);
+        // On Windows we must hold mutex: renameTo()/closeHandlers() also hold mutex while
+        // closing/nulling the channel, so without the lock a concurrent rename can close the
+        // channel between our null-check and channel.force(), producing ClosedChannelException.
+        // See KAFKA-1194 / KAFKA-8811.
+        if (OperatingSystem.IS_WINDOWS) {
+            synchronized (mutex) {
+                if (channel != null && channel.isOpen()) {
+                    channel.force(true);
+                }
+            }
+        } else {
+            if (channel != null && channel.isOpen()) {
+                channel.force(true);
+            }
         }
     }
 
@@ -267,10 +279,24 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Close this record set
      */
     public void close() throws IOException {
-        flush();
-        trim();
-        if (channel != null) {
-            channel.close();
+        // On Windows the entire flush+trim+close sequence must be atomic under mutex so that
+        // channel() cannot lazily reopen the channel between steps. Java synchronized is
+        // reentrant, so this is safe when called from renameTo() which already holds mutex.
+        if (OperatingSystem.IS_WINDOWS) {
+            synchronized (mutex) {
+                if (channel != null) {
+                    channel.force(true);
+                    trim();
+                    channel.close();
+                    channel = null;
+                }
+            }
+        } else {
+            flush();
+            if (channel != null) {
+                trim();
+                channel.close();
+            }
         }
     }
 
@@ -278,8 +304,22 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Close file handlers used by the FileChannel but don't write to disk. This is used when the disk may have failed
      */
     public void closeHandlers() throws IOException {
-        if (channel != null) {
-            channel.close();
+        // Must hold mutex on Windows: channel() lazily reopens when channel == null, so the
+        // close+null must be atomic to prevent a concurrent channel() from returning a channel
+        // that is immediately closed by this method, or from reopening after we nulled it.
+        // See KAFKA-1194 / KAFKA-8811.
+        if (OperatingSystem.IS_WINDOWS) {
+            synchronized (mutex) {
+                if (channel != null) {
+                    channel.close();
+                    channel = null;
+                }
+            }
+        } else {
+            if (channel != null) {
+                channel.close();
+                channel = null;
+            }
         }
     }
 
@@ -294,12 +334,14 @@ public class FileRecords extends AbstractRecords implements Closeable {
             synchronized (mutex) {
                 if (channel != null) {
                     Utils.closeQuietly(channel, "FileChannel");
+                    channel = null;
                 }
                 return Files.deleteIfExists(file.toPath());
             }
         } else {
             if (channel != null) {
                 Utils.closeQuietly(channel, "FileChannel");
+                channel = null;
             }
             return Files.deleteIfExists(file.toPath());
         }
