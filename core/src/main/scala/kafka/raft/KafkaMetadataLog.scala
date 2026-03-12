@@ -687,12 +687,15 @@ object KafkaMetadataLog extends Logging {
         }
       }
 
-      snapshotsToDelete.foreach { snapshotPath =>
-        Files.deleteIfExists(snapshotPath.path)
-        info(s"Deleted unneeded snapshot file with path $snapshotPath")
-      }
     } finally {
       filesInDir.close()
+    }
+
+    // Delete after closing the directory stream so Windows does not hold a
+    // directory handle that blocks the underlying file deletes (KAFKA-1194 / KAFKA-8811).
+    snapshotsToDelete.foreach { snapshotPath =>
+      Utils.deleteIfExistsWithRetry(snapshotPath.path)
+      info(s"Deleted unneeded snapshot file with path $snapshotPath")
     }
 
     info(s"Initialized snapshots with IDs ${snapshotsToRetain.keys} from ${log.dir}")

@@ -896,7 +896,7 @@ public class LogSegment implements Closeable {
     }
 
     private static boolean deleteFileIfExists(File file) throws IOException {
-        return Files.deleteIfExists(file.toPath());
+        return Utils.deleteIfExistsWithRetry(file.toPath());
     }
 
 }

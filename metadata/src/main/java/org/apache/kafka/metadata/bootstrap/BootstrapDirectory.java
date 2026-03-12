@@ -17,6 +17,7 @@
 
 package org.apache.kafka.metadata.bootstrap;
 
+import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.metadata.util.BatchFileReader;
 import org.apache.kafka.metadata.util.BatchFileReader.BatchAndType;
 import org.apache.kafka.metadata.util.BatchFileWriter;
@@ -97,7 +98,7 @@ public class BootstrapDirectory {
             throw new RuntimeException("No such directory as " + directoryPath);
         }
         Path tempPath = Paths.get(directoryPath, BINARY_BOOTSTRAP_FILENAME + ".tmp");
-        Files.deleteIfExists(tempPath);
+        Utils.deleteIfExistsWithRetry(tempPath);
         try {
             try (BatchFileWriter writer = BatchFileWriter.open(tempPath)) {
                 for (ApiMessageAndVersion message : bootstrapMetadata.records()) {
@@ -111,7 +112,7 @@ public class BootstrapDirectory {
                 ATOMIC_MOVE, REPLACE_EXISTING
             );
         } finally {
-            Files.deleteIfExists(tempPath);
+            Utils.deleteIfExistsWithRetry(tempPath);
         }
     }
 }

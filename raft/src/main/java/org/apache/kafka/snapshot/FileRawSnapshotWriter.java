@@ -132,7 +132,7 @@ public final class FileRawSnapshotWriter implements RawSnapshotWriter {
         try {
             channel.close();
             // This is a noop if freeze was called before calling close
-            Files.deleteIfExists(tempSnapshotPath);
+            Utils.deleteIfExistsWithRetry(tempSnapshotPath);
         } catch (IOException e) {
             throw new UncheckedIOException(
                 String.format("Error closing snapshot writer, " +

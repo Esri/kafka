@@ -43,7 +43,7 @@ public class SnapshotFile {
     }
 
     public boolean deleteIfExists() throws IOException {
-        boolean deleted = Files.deleteIfExists(file.toPath());
+        boolean deleted = Utils.deleteIfExistsWithRetry(file.toPath());
         if (deleted) {
             log.info("Deleted producer state snapshot {}", file.getAbsolutePath());
         } else {

@@ -100,7 +100,7 @@ public class CleanShutdownFileHandler {
     }
 
     public void delete() throws Exception {
-        Files.deleteIfExists(cleanShutdownFile.toPath());
+        Utils.deleteIfExistsWithRetry(cleanShutdownFile.toPath());
     }
 
     public boolean exists() {

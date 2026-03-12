@@ -248,7 +248,7 @@ public class RemoteIndexCache implements Closeable {
                 if (filename.endsWith(LogFileUtils.DELETED_FILE_SUFFIX) ||
                         filename.endsWith(TMP_FILE_SUFFIX)) {
                     try {
-                        if (Files.deleteIfExists(path)) {
+                        if (Utils.deleteIfExistsWithRetry(path)) {
                             log.debug("Deleted file path {} on cache initialization", path);
                         }
                     } catch (IOException e) {
@@ -297,15 +297,15 @@ public class RemoteIndexCache implements Closeable {
                         // Delete all of them if any one of those indexes is not available for a specific segment id
                         tryAll(List.of(
                                 () -> {
-                                    Files.deleteIfExists(offsetIndexFile.toPath());
+                                    Utils.deleteIfExistsWithRetry(offsetIndexFile.toPath());
                                     return null;
                                 },
                                 () -> {
-                                    Files.deleteIfExists(timestampIndexFile.toPath());
+                                    Utils.deleteIfExistsWithRetry(timestampIndexFile.toPath());
                                     return null;
                                 },
                                 () -> {
-                                    Files.deleteIfExists(txnIndexFile.toPath());
+                                    Utils.deleteIfExistsWithRetry(txnIndexFile.toPath());
                                     return null;
                                 }));
                     }

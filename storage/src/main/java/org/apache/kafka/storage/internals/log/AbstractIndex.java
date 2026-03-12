@@ -290,7 +290,7 @@ public abstract class AbstractIndex implements Closeable {
      */
     public boolean deleteIfExists() throws IOException {
         closeHandler();
-        return Files.deleteIfExists(file.toPath());
+        return Utils.deleteIfExistsWithRetry(file.toPath());
     }
 
     /**

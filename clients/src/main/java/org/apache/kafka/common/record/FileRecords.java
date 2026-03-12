@@ -336,14 +336,14 @@ public class FileRecords extends AbstractRecords implements Closeable {
                     Utils.closeQuietly(channel, "FileChannel");
                     channel = null;
                 }
-                return Files.deleteIfExists(file.toPath());
+                return Utils.deleteIfExistsWithRetry(file.toPath());
             }
         } else {
             if (channel != null) {
                 Utils.closeQuietly(channel, "FileChannel");
                 channel = null;
             }
-            return Files.deleteIfExists(file.toPath());
+            return Utils.deleteIfExistsWithRetry(file.toPath());
         }
     }
 

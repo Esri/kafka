@@ -211,7 +211,7 @@ public class FileQuorumStateStore implements QuorumStateStore {
 
     private void deleteFileIfExists(File file) {
         try {
-            Files.deleteIfExists(file.toPath());
+            Utils.deleteIfExistsWithRetry(file.toPath());
         } catch (IOException e) {
             throw new UncheckedIOException(
                 String.format("Error while deleting file %s", file.getAbsoluteFile()), e);

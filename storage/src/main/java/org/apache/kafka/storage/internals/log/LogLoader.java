@@ -278,7 +278,7 @@ public class LogLoader {
             // These are handled in the recovery logic in `KafkaMetadataLog`.
             if (filename.endsWith(LogFileUtils.DELETED_FILE_SUFFIX) && !filename.endsWith(SNAPSHOT_DELETE_SUFFIX)) {
                 logger.debug("Deleting stray temporary file {}", file.getAbsolutePath());
-                Files.deleteIfExists(file.toPath());
+                Utils.deleteIfExistsWithRetry(file.toPath());
             } else if (filename.endsWith(LogFileUtils.CLEANED_FILE_SUFFIX)) {
                 minCleanedFileOffset = Math.min(LogFileUtils.offsetFromFile(file), minCleanedFileOffset);
                 cleanedFiles.add(file);
@@ -301,13 +301,13 @@ public class LogLoader {
         }
         for (File file : invalidSwapFiles) {
             logger.debug("Deleting invalid swap file {} minCleanedFileOffset: {}", file.getAbsoluteFile(), minCleanedFileOffset);
-            Files.deleteIfExists(file.toPath());
+            Utils.deleteIfExistsWithRetry(file.toPath());
         }
 
         // Now that we have deleted all .swap files that constitute an incomplete split operation, let's delete all .clean files
         for (File file : cleanedFiles) {
             logger.debug("Deleting stray .clean file {}", file.getAbsolutePath());
-            Files.deleteIfExists(file.toPath());
+            Utils.deleteIfExistsWithRetry(file.toPath());
         }
 
         return validSwapFiles;
@@ -367,7 +367,7 @@ public class LogLoader {
                 File logFile = LogFileUtils.logFile(dir, offset);
                 if (!logFile.exists()) {
                     logger.warn("Found an orphaned index file {}, with no corresponding log file.", file.getAbsolutePath());
-                    Files.deleteIfExists(file.toPath());
+                    Utils.deleteIfExistsWithRetry(file.toPath());
                 }
             } else if (LogFileUtils.isLogFile(file)) {
                 // if it's a log file, load the corresponding log segment

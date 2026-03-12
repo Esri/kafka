@@ -89,7 +89,7 @@ public class LazyIndex<T extends AbstractIndex> implements Closeable {
 
         @Override
         public boolean deleteIfExists() throws IOException {
-            return Files.deleteIfExists(file.toPath());
+            return Utils.deleteIfExistsWithRetry(file.toPath());
         }
 
         @Override

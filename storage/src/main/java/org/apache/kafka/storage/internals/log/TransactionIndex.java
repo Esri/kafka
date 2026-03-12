@@ -123,7 +123,7 @@ public class TransactionIndex implements Closeable {
      */
     public boolean deleteIfExists() throws IOException {
         close();
-        return Files.deleteIfExists(file.toPath());
+        return Utils.deleteIfExistsWithRetry(file.toPath());
     }
 
     public void renameTo(File f) throws IOException {

@@ -41,6 +41,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -997,6 +998,37 @@ public final class Utils {
             fileChannel.force(true);
         } catch (NoSuchFileException e) {
             log.warn("Failed to flush file {}", path, e);
+        }
+    }
+
+    /**
+     * Delete the given path if it exists, retrying on {@link AccessDeniedException} on Windows.
+     *
+     * Windows file handles are reference-counted and another process (e.g. AV, indexer, or the
+     * OS directory-enumeration handle from a still-open {@code DirectoryStream}) may transiently
+     * hold a share-incompatible lock.  Retrying with short back-off resolves the vast majority of
+     * such transient conflicts without masking genuine permission errors.
+     *
+     * On non-Windows platforms the method delegates directly to {@link Files#deleteIfExists(Path)}
+     * with no retry overhead.
+     *
+     * @return {@code true} if the file was deleted, {@code false} if it did not exist.
+     * @throws IOException if deletion ultimately fails after all retry attempts.
+     */
+    public static boolean deleteIfExistsWithRetry(Path path) throws IOException {
+        final int maxAttempts = OperatingSystem.IS_WINDOWS ? 5 : 1;
+        int attempt = 1;
+        while (true) {
+            try {
+                return Files.deleteIfExists(path);
+            } catch (AccessDeniedException e) {
+                if (!OperatingSystem.IS_WINDOWS || attempt >= maxAttempts) {
+                    throw e;
+                }
+                log.debug("Failed to delete {} on attempt {}, retrying", path, attempt, e);
+                sleep(50L * attempt);
+                attempt += 1;
+            }
         }
     }
 
