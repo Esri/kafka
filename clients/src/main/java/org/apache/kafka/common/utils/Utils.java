@@ -1004,13 +1004,22 @@ public final class Utils {
     /**
      * Delete the given path if it exists, retrying on {@link AccessDeniedException} on Windows.
      *
-     * Windows file handles are reference-counted and another process (e.g. AV, indexer, or the
-     * OS directory-enumeration handle from a still-open {@code DirectoryStream}) may transiently
-     * hold a share-incompatible lock.  Retrying with short back-off resolves the vast majority of
-     * such transient conflicts without masking genuine permission errors.
+     * On Windows, {@link AccessDeniedException} can have two distinct causes:
+     * <ol>
+     *   <li><b>Transient share-mode conflict</b> — another process (e.g. AV, indexer, or an
+     *       open {@code DirectoryStream}) holds a handle that prevents deletion.  Retrying after
+     *       a short back-off resolves this.</li>
+     *   <li><b>Read-only file attribute</b> — Kafka snapshot files are marked read-only by
+     *       {@code FileRawSnapshotWriter.freeze()} before being renamed to {@code *.checkpoint}.
+     *       The attribute survives subsequent renames (e.g. to {@code *.checkpoint.deleted}),
+     *       so {@code Files.deleteIfExists} always throws {@code AccessDeniedException} on them.
+     *       Retrying alone never helps; the attribute must be cleared first.</li>
+     * </ol>
      *
-     * On non-Windows platforms the method delegates directly to {@link Files#deleteIfExists(Path)}
-     * with no retry overhead.
+     * This method handles both cases on Windows: on each {@code AccessDeniedException} attempt
+     * it first tries to clear the read-only attribute, then retries the delete up to
+     * {@code maxAttempts} times.  On non-Windows platforms it delegates directly to
+     * {@link Files#deleteIfExists(Path)} with no overhead.
      *
      * @return {@code true} if the file was deleted, {@code false} if it did not exist.
      * @throws IOException if deletion ultimately fails after all retry attempts.
@@ -1025,7 +1034,14 @@ public final class Utils {
                 if (!OperatingSystem.IS_WINDOWS || attempt >= maxAttempts) {
                     throw e;
                 }
-                log.debug("Failed to delete {} on attempt {}, retrying", path, attempt, e);
+                log.debug("Failed to delete {} on attempt {}, clearing read-only attribute and retrying", path, attempt, e);
+                // Clear the read-only attribute if present (set by FileRawSnapshotWriter.freeze()).
+                // This is a no-op if the file does not exist or the attribute is already writable.
+                try {
+                    path.toFile().setWritable(true);
+                } catch (SecurityException se) {
+                    log.debug("Could not clear read-only attribute on {}", path, se);
+                }
                 sleep(50L * attempt);
                 attempt += 1;
             }

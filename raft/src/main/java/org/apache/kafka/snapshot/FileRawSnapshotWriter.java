@@ -18,6 +18,7 @@ package org.apache.kafka.snapshot;
 
 import org.apache.kafka.common.record.MemoryRecords;
 import org.apache.kafka.common.record.UnalignedMemoryRecords;
+import org.apache.kafka.common.utils.OperatingSystem;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.server.common.OffsetAndEpoch;
 
@@ -112,8 +113,14 @@ public final class FileRawSnapshotWriter implements RawSnapshotWriter {
             channel.force(true);
             channel.close();
 
-            if (!tempSnapshotPath.toFile().setReadOnly()) {
-                throw new IllegalStateException(String.format("Unable to set file (%s) as read-only", tempSnapshotPath));
+            // On Windows, do not set the read-only attribute. The attribute survives renames,
+            // so a snapshot later renamed to *.checkpoint.deleted by markForDelete() would cause
+            // AccessDeniedException when Kafka tries to delete it at startup (recoverSnapshots).
+            // Windows provides no meaningful immutability guarantee from this attribute anyway.
+            if (!OperatingSystem.IS_WINDOWS) {
+                if (!tempSnapshotPath.toFile().setReadOnly()) {
+                    throw new IllegalStateException(String.format("Unable to set file (%s) as read-only", tempSnapshotPath));
+                }
             }
 
             Path destination = Snapshots.moveRename(tempSnapshotPath, snapshotId);
